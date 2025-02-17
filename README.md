@@ -57,12 +57,240 @@ can assume that agents have memory and so a set of turns will consistute a _run_
 web _session_) where memory was preserved during the session. Clients can elect to start a new 
 run with any operation request.
 
+## Exclusions
+
+Note that this spec is aimed at interoperability amongst agents in a _trusted_ environment. We do
+specify any user authentication nor specify any authz/authn between agents.
+
 ## Base elements of the protocol
 
 Agents must implement the following logical operations:
 
-_self-description_ Requests the agent to return its description (name and operations)
+_describe_ Requests the agent to return its description (name and operations)
 
-_process request_ - Send the agent a request to process. A request could start a n
+_process request_ - Send the agent a request to process. A request could start a new _Run_ or
+continue one already in progress. Callers can send a special `ConfigureRequest` to configure
+agent.
 
 _get events_ - returns available events, or subscribes to the stream of events from the agent
+
+### Agent operations
+
+Agent can advertise one or more supported operations via the _describe_ protocol. For
+convenience our protocol assumes that every agent supports a generic "ChatRequest" request type
+which contains a single text request (like a ChatGPT user prompt). Agents should implement this 
+request by publishing intermediate _TextOutput_ events (string messages) and publishing a final
+_OperationComplete_ event which contains a single string result. This "lowest-common denominator"
+operation allows us to integrate almost any agent that supports a basic conversational interface.
+
+### Pseudo-code example
+
+```
+process(requestObject, run_id, run_context)
+    Requests an agent to start an operation. 
+    The requestObject specifies the details of the request and references an _operation_ defined by the agent.
+    If 'run_id' is null, then a new Run is started (agent short-term memory is initialized).
+    "run_context" can pass additional metadata into the operation. A notable example is the "user_context".
+    which could identify the requesting user.
+    If run_id is not null, then this operation continues a prior Run.
+
+  <-- returns a RequestStarted object
+
+get_events(request_id, stream=True)
+    Streams output events from the agent until _OperationComplete_ which should be the final event.
+```
+
+as you can see from this pseudo-code, much of our protocol lies in the definitions of the input and
+output events to the agent.
+
+## Schema definitions
+
+Below are casual descriptions of the main types/events in the system. These will be formalized via JSON Schemas.
+
+```
+# == result of the "describe" API
+
+type AgentDescriptor:
+    name: string
+    purpose: string
+    endpoints: list[string] - list of supported API endpoints
+    operations: list[AgentOperation]
+    tools: list[string] - for information purposes
+
+# agent operations 
+
+type AgentOperation:
+    name: string
+    description: string
+    input_schema: Optional formal schema
+    output_schema: Optional formal schema
+
+type DefaultChatOperation(AgentOperation):
+    name: chat
+    description: send a chat request
+    input_schema: [input: string]
+    output_schema: [output: string]
+
+# == Event base type
+
+type Event:
+    id: int             # incrementing event index, only unique within a Run
+    run_id: int         # the Run that this event is part of
+    agent: string       # Identifier for the agent, defaults to the name
+    type: string        # event type identifier
+    depth: int          # indicates the caller-chain depth where this event originated
+
+# == Request types
+
+type ConfigureRequest:         # pass configuration to the agent
+    args: dict
+
+type Request:
+    request_id: string
+    logging_level:  string # request additional logging detail from the agent
+    request_metadata: dict   # opaque additional data to the request. Useful for things like:
+                             # user_id, current_time, ...
+
+type ChatRequest(Request):
+    input: string
+
+type CancelRequest(Request): # cancel a request in progress
+
+type ResumeWithInput(Request): # tell an agent to resume from WaitForInput
+    request_keys: dict  # key, value pairs
+
+# Implementations can implement new Request types. An example might be 'ChatWithFileUpload' which
+# would include a file attachment with the user input. 
+
+# == Response events
+
+type RequestStarted: # the agent has started processing a request
+    request_id: string
+
+type WaitForInput:   # the agent is waiting on caller input
+    request_keys: dict      # Requested key value, description pairs
+
+type TextOutput(Event): # the agent generated some text output
+    content: string 
+
+type ToolCall(Event):   # agent is calling a tool
+    function_name: string
+    args: dict
+
+type ToolResult(Event): # a tool call returned a result
+    function_name: string
+    text_result: string     # text representation of the tool result
+
+type ToolTextOutput(Event): # tool call generated some text output
+    content: string
+
+type ToolError(Event):
+    content: string         # a tool encountered an error
+
+type CompletionCall(Event): # agent is requesting a completion from the LLM
+
+type CompletionResult(Event): # the result of an LLM completion call
+
+type OperationComplete(Event): # the agent turn is completed
+    finish_reason: string   [success, error, canceled]
+    
+```
+
+### The minimum Event set
+
+An agent **must** support these events at minimum:
+
+> ChatRequest, RequestStarted, OperationComplete
+
+To make the operation of an agent visible, it **should** support these events:
+
+> TextOutput, ToolCall, ToolResult, ToolError, CompletionCall, CompletionResult
+
+All other events are optional.
+
+
+## Protocol as REST Endpoints
+
+The protocol can be implemented on multiple transport types. For reference purposes we define a
+REST API that all agents should support. Other transports are optional (websocket, etc...).
+
+```
+All endpoints are relative to the agent base address:
+
+    # Get the agent's descriptor
+    /describe -> AgentDescriptor
+
+    # Send the agent a request to process
+    /process (Request) -> Event|None
+        params: 
+            wait: bool  # wait for the agent response. Agent will return an Event response, otherwise
+                        # the agent returns only the HTTP status code.
+
+    # Get events from a request. If stream=False then the agent will return any events queued since
+    # the last `getevents` call (basic polling mechanism). If stream=True then the endpoint will
+    # publish events via SSE
+    /getevents (request_id)
+        params:
+            stream: bool
+            since: event_id     # pass the last event_id and any later events will be returned
+
+**Optional endpoints**
+
+    GET /request/{request_id}    -> Returns the status of a request
+    GET /runs                    -> Returns a list of persisted Runs
+```
+
+Example event flows:
+
+```
+# retrieve agent operations
+GET /describe
+
+# configure an agent
+POST /process (ConfigureRequest(args), wait=True)
+    -> OperationComplete
+
+# Start a run, passing a chat prompt to the agent
+POST /process (ChatRequest(input), wait=True)
+    -> RequestStarted (contains 'request_id' and 'run_id')
+
+# Stream output events from the agent
+GET /getevents/{request_id}?stream=True
+
+# Continue a Run
+POST /process (ChatRequest(run_id=?))
+
+```
+
+**Human in the Loop**
+
+```
+POST /process (ChatRequest(input), wait=True)
+    -> RequestStarted (contains 'request_id' and 'run_id')
+
+# Stream output events from the agent
+GET /getevents/{request_id}?stream=True
+
+<- WaitForInput event received
+..caller prompts for input...
+
+POST /process (ResumeWithInput(...))
+GET /getevents/{request_id}?stream=True
+```
+
+**Canceling a Request**
+
+You can interrupt an agent turn:
+
+```
+POST /process (ChatRequest(input), wait=True)
+
+GET /getevents/{request_id}?stream=True
+
+POST /process (CancelRequest(request_id=?))
+
+GET /getevents/{request_id}?stream=True
+<-- OperationComplete (finish_reason=canceled)
+```
+
+

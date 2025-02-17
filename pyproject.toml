@@ -1,0 +1,17 @@
+[project]
+name = "agent-protocol"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Scott Persinger", email = "scottpersinger@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+agent-protocol = "agent_protocol:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
