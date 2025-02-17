@@ -181,6 +181,12 @@ type ToolResult(Event): # a tool call returned a result
     function_name: string
     text_result: string     # text representation of the tool result
 
+type ArtifactGenerated(Event): # the agent generated some artifact
+    name: string
+    id: string
+    url: string
+    mime_type: string
+
 type ToolTextOutput(Event): # tool call generated some text output
     content: string
 
@@ -238,6 +244,7 @@ All endpoints are relative to the agent base address:
 
     GET /request/{request_id}    -> Returns the status of a request
     GET /runs                    -> Returns a list of persisted Runs
+    GET /getevents/{run_id}      -> Returns all events for a Run in time sequence
 ```
 
 Example event flows:
@@ -291,6 +298,28 @@ POST /process (CancelRequest(request_id=?))
 
 GET /getevents/{request_id}?stream=True
 <-- OperationComplete (finish_reason=canceled)
+```
+
+**Artifact example**
+
+An agent uses a _PDFWriter_ tool to create a PDF file that the caller
+can download:
+
+```
+POST /process (ChatRequest(input), wait=True)
+
+GET /getevents/{request_id}?stream=True
+<-- ArtifactGenerated
+(caller displays the artifact to the user)
+```
+
+**Persisted Runs**
+
+Caller lists available Runs, then requests the event history from a Run:
+
+```
+GET /runs
+GET /events/{run_id=?}
 ```
 
 
