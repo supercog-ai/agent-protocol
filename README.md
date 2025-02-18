@@ -44,14 +44,20 @@ model then agent cooperation is very natural, and tools and agents are interchan
 hand-coded "web browser tool", but tomorrow I can swap it out for a true agent (like BrowserUse) which performs
 the job better.
 
+(One caveat is that the LLM tool calling protocol only has a single LLM completion pass to 'observe' the
+results of a tool call. So if our 'tool' is an agent generating an output stream, what is the input to
+the 'observe' phase? This is still an open design question. 'Cache the events' and provide them all as the
+result is the easiest model. One could imagine progessively feeding the sub-agent results to the caller, like
+"Here are prelim results from that tool call:... Keep waiting for more output.")
+
 ## Agent definition
 
 An _agent_ is defined as a named software entity which advertises a set of supported _operations_. A client
-can request the agent to perform an operation by sending it an operation request message. Subsequently
+can _request_ the agent to perform an _operation_ by sending it an operation request message. Subsequently
 the agent will publish a stream of events relevant to the operation until eventually it publishes
-an _operation complete_ event. 
+an _request completed_ event. 
 
-All events between _operation request_ and _operation complete_ are considered a single _turn_. The
+All events between _request started_ and _requsted completed_ are considered a single _turn_. The
 client can send another request to the same agent, and this is considered the _next turn_. Clients
 can assume that agents have memory and so a set of turns will consistute a _run_ (analogous to a 
 web _session_) where memory was preserved during the session. Clients can elect to start a new 
@@ -68,7 +74,7 @@ Agents must implement the following logical operations:
 
 _describe_ Requests the agent to return its description (name and operations)
 
-_process request_ - Send the agent a request to process. A request could start a new _Run_ or
+_process_ - Send the agent a request to process. A request could start a new _Run_ or
 continue one already in progress. Callers can send a special `ConfigureRequest` to configure
 agent.
 
@@ -80,7 +86,7 @@ Agent can advertise one or more supported operations via the _describe_ protocol
 convenience our protocol assumes that every agent supports a generic "ChatRequest" request type
 which contains a single text request (like a ChatGPT user prompt). Agents should implement this 
 request by publishing intermediate _TextOutput_ events (string messages) and publishing a final
-_OperationComplete_ event which contains a single string result. This "lowest-common denominator"
+_RequestCompleted_ event which contains a single string result. This "lowest-common denominator"
 operation allows us to integrate almost any agent that supports a basic conversational interface.
 
 ### Pseudo-code example
@@ -97,7 +103,7 @@ process(requestObject, run_id, run_context)
   <-- returns a RequestStarted object
 
 get_events(request_id, stream=True)
-    Streams output events from the agent until _OperationComplete_ which should be the final event.
+    Streams output events from the agent until _RequestCompleted_ which should be the final event.
 ```
 
 as you can see from this pseudo-code, much of our protocol lies in the definitions of the input and
@@ -138,6 +144,7 @@ type Event:
     run_id: int         # the Run that this event is part of
     agent: string       # Identifier for the agent, defaults to the name
     type: string        # event type identifier
+    role: string        # generally one of: system, assistant, user, tool
     depth: int          # indicates the caller-chain depth where this event originated
 
 # == Request types
@@ -197,7 +204,7 @@ type CompletionCall(Event): # agent is requesting a completion from the LLM
 
 type CompletionResult(Event): # the result of an LLM completion call
 
-type OperationComplete(Event): # the agent turn is completed
+type RequestCompleted(Event): # the agent turn is completed
     finish_reason: string   [success, error, canceled]
     
 ```
@@ -206,7 +213,7 @@ type OperationComplete(Event): # the agent turn is completed
 
 An agent **must** support these events at minimum:
 
-> ChatRequest, RequestStarted, OperationComplete
+> ChatRequest, RequestStarted, RequestCompleted
 
 To make the operation of an agent visible, it **should** support these events:
 
@@ -214,6 +221,23 @@ To make the operation of an agent visible, it **should** support these events:
 
 All other events are optional.
 
+## Relation to OpenAI APIs
+
+The most analagous API is the OpenAI [Assistants API](https://platform.openai.com/docs/api-reference/assistants).
+The Agent Protocol is similar, some terminology is different:
+
+- OpenAI uses `Thread` where we use `Run`. Both represent a "chat session", with "conversation thread" being
+the inspiration for the OpenAI terminology. Because Agents are meant to generalize beyond just chat, we 
+think of "running" an agent in a session.
+
+- OpenAI uses `run` to refer to what we term a `turn` - the single turn execution of their Assistant.
+We find that 'run' and 'run step' are too low level to be useful other than logging. The same concept
+is represented in agent protocol by the `RequestStarted` and `RequestCompleted` events.
+
+Many apps and libraries have been built around the streaming `completion` API defined by OpenAI. To
+suppor broader compatibility, we provide a `stream_request` endpoint which takes a Request input
+object and streams result events via SSE immediately back to the client. This endpoint operates conceptually
+in a similar manner as the standard `completion` endpoint.
 
 ## Protocol as REST Endpoints
 
@@ -221,7 +245,13 @@ The protocol can be implemented on multiple transport types. For reference purpo
 REST API that all agents should support. Other transports are optional (websocket, etc...).
 
 ```
-All endpoints are relative to the agent base address:
+Basic discovery endpoint
+
+    # List agents available at this endpoint
+    /   -> list[name, path] pairs
+
+
+All other endpoints are relative to the agent's path:
 
     # Get the agent's descriptor
     /describe -> AgentDescriptor
@@ -240,6 +270,10 @@ All endpoints are relative to the agent base address:
             stream: bool
             since: event_id     # pass the last event_id and any later events will be returned
 
+    # Convenience route that starts a new Request and streams back the results in one call
+    /stream_request (Request)
+        <-- events via SSE
+
 **Optional endpoints**
 
     GET /request/{request_id}    -> Returns the status of a request
@@ -255,7 +289,7 @@ GET /describe
 
 # configure an agent
 POST /process (ConfigureRequest(args), wait=True)
-    -> OperationComplete
+    -> RequestCompleted
 
 # Start a run, passing a chat prompt to the agent
 POST /process (ChatRequest(input), wait=True)
@@ -297,7 +331,7 @@ GET /getevents/{request_id}?stream=True
 POST /process (CancelRequest(request_id=?))
 
 GET /getevents/{request_id}?stream=True
-<-- OperationComplete (finish_reason=canceled)
+<-- RequestCompleted (finish_reason=canceled)
 ```
 
 **Artifact example**
