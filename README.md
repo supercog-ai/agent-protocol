@@ -1,4 +1,4 @@
-# Agent Protocol (2025 edition)
+# Agent Protocol (draft - 2025 edition)
 
 We are rapidly entering a world with lots and lots of AI agents, built on lots and lots of different frameworks.
 There have been [previous efforts](https://agentprotocol.ai/) at defining a common protocol for interacting
@@ -8,6 +8,8 @@ The goals of this proposal are to enable interoperability between _agents_ built
 frameworks like LangGraph, Smol Agents, Atomic Agents, etc... Notably, our emphasis is on allowing
 two (or more) agents to collaborate together, rather than providing a common User->Agent interface
 (although that is a partial side-effect of this proposal).
+
+You can read some background on our [motivations](./MOTIVATION.md) for this project.
 
 ## Goal by example
 
