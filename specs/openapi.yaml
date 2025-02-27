@@ -1,0 +1,259 @@
+openapi: 3.1.0
+info:
+  title: Agent Protocol API
+  description: API specification for the Agent Protocol
+  version: 0.1.0
+  
+components:
+  schemas:
+    FinishReason:
+      type: string
+      enum:
+        - success
+        - error
+        - canceled
+    
+    AgentOperation:
+      type: object
+      required:
+        - name
+        - description
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        input_schema:
+          type: object
+          nullable: true
+        output_schema:
+          type: object
+          nullable: true
+    
+    AgentDescriptor:
+      type: object
+      required:
+        - name
+        - purpose
+        - endpoints
+        - operations
+      properties:
+        name:
+          type: string
+        purpose:
+          type: string
+        endpoints:
+          type: array
+          items:
+            type: string
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentOperation'
+        tools:
+          type: array
+          items:
+            type: string
+          default: []
+    
+    Event:
+      type: object
+      required:
+        - id
+        - run_id
+        - agent
+        - type
+      properties:
+        id:
+          type: integer
+        run_id:
+          type: string
+        agent:
+          type: string
+        type:
+          type: string
+        depth:
+          type: integer
+          default: 0
+        timestamp:
+          type: string
+          format: date-time
+    
+    Request:
+      type: object
+      required:
+        - request_id
+      properties:
+        request_id:
+          type: string
+        logging_level:
+          type: string
+          nullable: true
+        request_metadata:
+          type: object
+          default: {}
+    
+    ChatRequest:
+      allOf:
+        - $ref: '#/components/schemas/Request'
+        - type: object
+          required:
+            - input
+          properties:
+            input:
+              type: string
+    
+    ConfigureRequest:
+      allOf:
+        - $ref: '#/components/schemas/Request'
+        - type: object
+          required:
+            - args
+          properties:
+            args:
+              type: object
+    
+    CancelRequest:
+      allOf:
+        - $ref: '#/components/schemas/Request'
+    
+    ResumeWithInput:
+      allOf:
+        - $ref: '#/components/schemas/Request'
+        - type: object
+          required:
+            - request_keys
+          properties:
+            request_keys:
+              type: object
+    
+    RequestStarted:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - request_id
+          properties:
+            request_id:
+              type: string
+    
+    WaitForInput:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - request_keys
+          properties:
+            request_keys:
+              type: object
+              additionalProperties:
+                type: string
+    
+    TextOutput:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - content
+          properties:
+            content:
+              type: string
+    
+    ToolCall:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - function_name
+            - args
+          properties:
+            function_name:
+              type: string
+            args:
+              type: object
+    
+    ToolResult:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - function_name
+            - text_result
+          properties:
+            function_name:
+              type: string
+            text_result:
+              type: string
+    
+    ArtifactGenerated:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - name
+            - id
+            - url
+            - mime_type
+          properties:
+            name:
+              type: string
+            id:
+              type: string
+            url:
+              type: string
+            mime_type:
+              type: string
+    
+    OperationComplete:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          required:
+            - finish_reason
+          properties:
+            finish_reason:
+              $ref: '#/components/schemas/FinishReason'
+
+paths:
+  /chat:
+    post:
+      summary: Send a chat message to the agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Chat processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TextOutput'
+  
+  /cancel:
+    post:
+      summary: Cancel an ongoing operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelRequest'
+      responses:
+        '200':
+          description: Operation cancelled successfully
+  
+  /configure:
+    post:
+      summary: Configure agent parameters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigureRequest'
+      responses:
+        '200':
+          description: Agent configured successfully 
