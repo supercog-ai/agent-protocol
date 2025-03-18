@@ -55,15 +55,24 @@ result is the easiest model. One could imagine progessively feeding the sub-agen
 ## Agent definition
 
 An _agent_ is defined as a named software entity which advertises a set of supported _operations_. A client
-can _request_ the agent to perform an _operation_ by sending it an operation request message. Subsequently
+can _run_ the agent to perform an _operation_ by sending it a run request message. Subsequently
 the agent will publish a stream of events relevant to the operation until eventually it publishes
-an _request completed_ event. 
+an _run completed_ event. 
 
-All events between _request started_ and _requsted completed_ are considered a single _turn_. The
-client can send another request to the same agent, and this is considered the _next turn_. Clients
-can assume that agents have memory and so a set of turns will consistute a _run_ (analogous to a 
-web _session_) where memory was preserved during the session. Clients can elect to start a new 
-run with any operation request.
+All events between _run started_ and _run completed_ are considered a single _run_. The
+client can send another request to the same agent, and this is considered the _next run_. Agent memory
+is preserved across sequential runs and together those runs consistute a _thread_ (analogous to a 
+web _session_). Threads are started automatically, but clients can also elect to start a new thread 
+with any operation request.
+
+Thus this model:
+
+```
+Agent
+    --> Thread
+        --> Run
+            --> Events
+```
 
 ## Exclusions
 
@@ -76,36 +85,37 @@ Agents must implement the following logical operations:
 
 _describe_ Requests the agent to return its description (name and operations)
 
-_process_ - Send the agent a request to process. A request could start a new _Run_ or
-continue one already in progress. Callers can send a special `ConfigureRequest` to configure
-agent.
+_configure_ Send a `ConfigureRequest` to configure some aspect of the agent's environment.
 
-_get events_ - returns available events, or subscribes to the stream of events from the agent
+_run_ - Send the agent a request to process. A request could start a new _thread_ or
+continue one already in progress. 
+
+_get events_ - returns available events, or waits for the more events from an active _run_
 
 ### Agent operations
 
 Agent can advertise one or more supported operations via the _describe_ protocol. For
-convenience our protocol assumes that every agent supports a generic "ChatRequest" request type
+convenience our protocol assumes that every agent supports a generic "ChatRequest" operation type
 which contains a single text request (like a ChatGPT user prompt). Agents should implement this 
 request by publishing intermediate _TextOutput_ events (string messages) and publishing a final
-_RequestCompleted_ event which contains a single string result. This "lowest-common denominator"
+_RunCompleted_ event which contains a single string result. This "lowest-common denominator"
 operation allows us to integrate almost any agent that supports a basic conversational interface.
 
 ### Pseudo-code example
 
 ```
-process(requestObject, run_id, run_context)
+run(requestObject, thread_id, run_context)
     Requests an agent to start an operation. 
     The requestObject specifies the details of the request and references an _operation_ defined by the agent.
-    If 'run_id' is null, then a new Run is started (agent short-term memory is initialized).
+    If 'thread_id' is null, then a new Thread is started (agent short-term memory is initialized).
     "run_context" can pass additional metadata into the operation. A notable example is the "user_context".
     which could identify the requesting user.
-    If run_id is not null, then this operation continues a prior Run.
+    If thread_id is not null, then this operation continues an existing Thread.
 
-  <-- returns a RequestStarted object
+  <-- returns a RunStarted object
 
-get_events(request_id, stream=True)
-    Streams output events from the agent until _RequestCompleted_ which should be the final event.
+get_events(run_id, stream=True)
+    Streams output events from the agent until _RunCompleted_ which should be the final event.
 ```
 
 as you can see from this pseudo-code, much of our protocol lies in the definitions of the input and
@@ -143,7 +153,8 @@ type DefaultChatOperation(AgentOperation):
 
 type Event:
     id: int             # incrementing event index, only unique within a Run
-    run_id: int         # the Run that this event is part of
+    run_id: <uuid>      # the Run that generated this event
+    thread_id: <uuid>   # the Thread that this event is part of
     agent: string       # Identifier for the agent, defaults to the name
     type: string        # event type identifier
     role: string        # generally one of: system, assistant, user, tool
@@ -155,7 +166,6 @@ type ConfigureRequest:         # pass configuration to the agent
     args: dict
 
 type Request:
-    request_id: string
     logging_level:  string # request additional logging detail from the agent
     request_metadata: dict   # opaque additional data to the request. Useful for things like:
                              # user_id, current_time, ...
@@ -173,8 +183,8 @@ type ResumeWithInput(Request): # tell an agent to resume from WaitForInput
 
 # == Response events
 
-type RequestStarted: # the agent has started processing a request
-    request_id: string
+type RunStarted: # the agent has started processing a request
+    run_id
 
 type WaitForInput:   # the agent is waiting on caller input
     request_keys: dict      # Requested key value, description pairs
@@ -206,7 +216,7 @@ type CompletionCall(Event): # agent is requesting a completion from the LLM
 
 type CompletionResult(Event): # the result of an LLM completion call
 
-type RequestCompleted(Event): # the agent turn is completed
+type RunCompleted(Event): # the agent turn is completed
     finish_reason: string   [success, error, canceled]
     
 ```
@@ -215,7 +225,7 @@ type RequestCompleted(Event): # the agent turn is completed
 
 An agent **must** support these events at minimum:
 
-> ChatRequest, RequestStarted, RequestCompleted
+> ChatRequest, RunStarted, RunCompleted
 
 To make the operation of an agent visible, it **should** support these events:
 
@@ -226,15 +236,17 @@ All other events are optional.
 ## Relation to OpenAI APIs
 
 The most analagous API is the OpenAI [Assistants API](https://platform.openai.com/docs/api-reference/assistants).
+We use similar but not identical nouns:
+
+|OpenAI | Agent Protocol |
+|-------|-----------------|
+| Assistant | Agent       |
+| Thread    | Thread      |
+| Run       | Run         |
+| Steps     | Events      |
+| Messages  | Events      |
+
 The Agent Protocol is similar, some terminology is different:
-
-- OpenAI uses `Thread` where we use `Run`. Both represent a "chat session", with "conversation thread" being
-the inspiration for the OpenAI terminology. Because Agents are meant to generalize beyond just chat, we 
-think of "running" an agent in a session.
-
-- OpenAI uses `run` to refer to what we term a `turn` - the single turn execution of their Assistant.
-We find that 'run' and 'run step' are too low level to be useful other than logging. The same concept
-is represented in agent protocol by the `RequestStarted` and `RequestCompleted` events.
 
 Many apps and libraries have been built around the streaming `completion` API defined by OpenAI. To
 suppor broader compatibility, we provide a `stream_request` endpoint which takes a Request input
@@ -259,28 +271,28 @@ All other endpoints are relative to the agent's path:
     /describe -> AgentDescriptor
 
     # Send the agent a request to process
-    /process (Request) -> Event|None
+    /run (Request) -> Event|None
         params: 
             wait: bool  # wait for the agent response. Agent will return an Event response, otherwise
                         # the agent returns only the HTTP status code.
 
     # Get events from a request. If stream=False then the agent will return any events queued since
-    # the last `getevents` call (basic polling mechanism). If stream=True then the endpoint will
+    # the last `get_events` call (basic polling mechanism). If stream=True then the endpoint will
     # publish events via SSE
-    /getevents (request_id)
+    /get_events (run_id)
         params:
             stream: bool
             since: event_id     # pass the last event_id and any later events will be returned
 
-    # Convenience route that starts a new Request and streams back the results in one call
+    # Convenience route that starts a new Run and streams back the results in one call
     /stream_request (Request)
         <-- events via SSE
 
 **Optional endpoints**
 
-    GET /request/{request_id}    -> Returns the status of a request
-    GET /runs                    -> Returns a list of persisted Runs
-    GET /getevents/{run_id}      -> Returns all events for a Run in time sequence
+    GET /runs/{run_id}              -> Returns the status of a request
+    GET /threads                    -> Returns a list of persisted Runs
+    GET /get_events/{thread_id}      -> Returns all events for a Run in chronological order
 ```
 
 Example event flows:
@@ -290,50 +302,50 @@ Example event flows:
 GET /describe
 
 # configure an agent
-POST /process (ConfigureRequest(args), wait=True)
-    -> RequestCompleted
+POST /configure (ConfigureRequest)
+    -> RunCompleted
 
-# Start a run, passing a chat prompt to the agent
-POST /process (ChatRequest(input), wait=True)
-    -> RequestStarted (contains 'request_id' and 'run_id')
+# Run the agent, passing a chat prompt to the agent
+POST /run (ChatRequest(input), wait=True)
+    -> RunStarted (contains 'run_id' and 'thread_id')
 
 # Stream output events from the agent
-GET /getevents/{request_id}?stream=True
+GET /get_events/{run_id}?stream=True
 
-# Continue a Run
-POST /process (ChatRequest(run_id=?))
+# Continue a thread
+POST /run (ChatRequest(thread_id=?))
 
 ```
 
 **Human in the Loop**
 
 ```
-POST /process (ChatRequest(input), wait=True)
-    -> RequestStarted (contains 'request_id' and 'run_id')
+POST /run (ChatRequest(input), wait=True)
+    -> RunStarted (contains 'run_id' and 'thread_id')
 
 # Stream output events from the agent
-GET /getevents/{request_id}?stream=True
+GET /get_events/{run_id}?stream=True
 
-<- WaitForInput event received
+<- WaitForInput event received (the run is paused)
 ..caller prompts for input...
 
-POST /process (ResumeWithInput(...))
-GET /getevents/{request_id}?stream=True
+POST /run (ResumeWithInput(run_id=))
+GET /get_events/{run_id}?stream=True
 ```
 
 **Canceling a Request**
 
-You can interrupt an agent turn:
+You can interrupt a long-running agent run:
 
 ```
-POST /process (ChatRequest(input), wait=True)
+POST /run (ChatRequest(input), wait=True)
 
-GET /getevents/{request_id}?stream=True
+GET /get_events/{run_id}?stream=True
 
-POST /process (CancelRequest(request_id=?))
+POST /run (CancelRequest(run_id=?))
 
-GET /getevents/{request_id}?stream=True
-<-- RequestCompleted (finish_reason=canceled)
+GET /get_events/{run_id}?stream=True
+<-- RunCompleted (finish_reason=canceled)
 ```
 
 **Artifact example**
@@ -342,20 +354,20 @@ An agent uses a _PDFWriter_ tool to create a PDF file that the caller
 can download:
 
 ```
-POST /process (ChatRequest(input), wait=True)
+POST /run (ChatRequest(input), wait=True)
 
-GET /getevents/{request_id}?stream=True
+GET /get_events/{run_id}?stream=True
 <-- ArtifactGenerated
 (caller displays the artifact to the user)
 ```
 
-**Persisted Runs**
+**Persisted Threads**
 
-Caller lists available Runs, then requests the event history from a Run:
+Caller lists available Threads, then requests the event history from a Thread:
 
 ```
-GET /runs
-GET /events/{run_id=?}
+GET /threads
+GET /get_events/{thread_id=?}
 ```
 
 
