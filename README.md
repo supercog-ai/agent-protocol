@@ -370,4 +370,80 @@ GET /threads
 GET /get_events/{thread_id=?}
 ```
 
+## Development
+
+### OpenAPI Specification
+
+The Agent Protocol is defined using OpenAPI 3.1.0 specification in the `specs/openapi.yaml` file. This specification includes JSON Schema definitions for all protocol types, events, and API endpoints.
+
+Python data models are automatically generated from this specification using the `datamodel-code-generator` tool:
+
+```bash
+python scripts/generate_models.py
+```
+
+This will update the models in `src/agent_protocol/models/`.
+
+This approach ensures that:
+1. The specification serves as the single source of truth
+2. All models are consistent with the specification
+3. Documentation and code are always in sync
+4. Models can be regenerated for different programming languages
+
+### Python Models
+
+The `src/agent_protocol/models/` directory contains auto-generated Python data models for the Agent Protocol. These models are automatically generated from the OpenAPI specification.
+
+#### Usage
+
+You can import and use the models directly:
+
+```python
+from agent_protocol.models import (
+    ChatRequest,
+    TextOutput,
+    FinishReason,
+    # etc.
+)
+
+# Create a chat request
+request = ChatRequest(
+    request_id="req-123",
+    input="Hello, agent!",
+)
+
+# Create a text output event
+output = TextOutput(
+    id=1,
+    run_id="run-789",
+    agent="MyAgent",
+    type="text_output",
+    content="Hello, human!",
+)
+```
+
+#### Manual Adjustments
+
+The auto-generated models may sometimes require manual adjustments for:
+
+1. **Mutable default values**: Python dataclasses don't allow mutable defaults like empty lists or dictionaries. Use `field(default_factory=list)` instead.
+
+2. **Inheritance issues**: When a class inherits from another class, all required fields must come before optional fields.
+
+3. **Field name conflicts**: If a field name conflicts with a Python keyword or another field, it needs to be renamed.
+
+These adjustments are typically handled automatically by the generation script, but you may need to make additional changes for complex cases.
+
+#### Testing Models
+
+You can test the models using the provided test script:
+
+```bash
+poetry run python scripts/test_models.py
+```
+
+### Development Setup
+
+// ... existing code ...
+
 
